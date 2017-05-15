@@ -19,7 +19,11 @@ import scala.collection.mutable.ArrayBuffer
 object TreeUserSimilar {
     def main(args: Array[String]): Unit = {
         val Array(trajectoryPath, homePath, date, topN, scoreOutput, scoreTopOutput) = args
-        //        val date = 20160530
+        val trajectoryLengthMax = 15
+        val personCount = 3000
+        val taskCount = 300
+        val stayTimeMin = 100
+        //        val perLocUserCount=30
         //        val topN = 1
 
         val conf = new SparkConf().setAppName("TreeUserSimilar")
@@ -32,15 +36,13 @@ object TreeUserSimilar {
 
         // 轨迹数据
         val trajectoryRdd = sc.textFile(trajectoryPath).map(x => x.split("\t"))
-                .filter(x => x(5).toLong == date.toInt && x(4).toDouble > 100) //一天的轨迹进行比较
+                .filter(x => x(5).toLong == date.toInt && x(4).toDouble > stayTimeMin) //一天的轨迹进行比较
                 .map(x => (x(0).toLong, ((x(1).toDouble, x(2).toDouble), x(3).toLong, x(4).toDouble)))
 
         val trajectoryArrayData = trajectoryRdd.groupByKey()
-                .map(x => (x._1, x._2.toList.sortBy(x => x._2)))
-                .filter(x => x._2.size < 10 && x._2.size > 1) //仅比较位置数>1的用户
-        //取topN
-        //                .sortBy(x => x._2.size, false)
-        //                .take(100)
+                .map(x => (x._1, x._2.toList))
+                .filter(x => x._2.size < trajectoryLengthMax && x._2.size > 1) //仅比较位置数>1的用户
+
 
         //每个位置重要度 log(n/N)
         val userTotalNum = trajectoryRdd.map(x => x._1).distinct().count() //总用户数
@@ -51,45 +53,28 @@ object TreeUserSimilar {
         val locScore = sc.broadcast(locScoreTmp)
 
 
-        //比较用户位置相似性
+        //用户轨迹和家的位置结合
         val tmpAllData = homeRdd.join(trajectoryArrayData)
                 .sortBy(x => x._2._2.size, false)
-                .take(1000)
+                .take(personCount)
         val allData = sc.parallelize(tmpAllData)
-        //        val allData = tmpAllData
+
+        //保存全部实验数据
         allData.repartition(1).map(x => ((x._2._1, x._1), x._2._2)).flatMapValues(x => x)
                 .map {
                     case (((jing, wei), phone), ((lng, lat), arrive_time, stay_time)) => {
                         s"$jing\t$wei\t$phone\t$lng\t$lat\t$arrive_time\t$stay_time"
                     }
                 }.saveAsTextFile(scoreOutput + "_allData")
+
         //按地区,考虑用户相似性
         val userSimilarSocre = allData.map(x => ((x._2._1, (x._1, (x._2._2, x._2._2.map(y => locScore.value.get(y._1).get).sum)))))
-                .groupByKey(300)
+                .groupByKey(taskCount)
                 .flatMapValues(x => {
-                    //                                        val i1 = x
-                    //                                        val i2 = x.toArray
-                    //                                        i1.flatMap(y => {
-                    //                                            i2.filter(z => z._1 > y._1)
-                    //                                                    .map(z => {
-                    //                                                        val buildTree = new BuildTree[Double](y._2._1, z._2._1)
-                    //                                                        val tree = buildTree.buildTreeFromLocation(1)
-                    //                                                        //查看树结构
-                    //                                                        //                                    val allBranchNodeIndex = tree.getAllBranchNodeIndex()
-                    //                                                        //                                    val score = buildTree.similarScore(topN.toInt, allBranchNodeIndex, tree, locScore.value, y._2._2, z._2._2)
-                    //                                                        (y._1, z._1, 3)
-                    //                                                    })
-                    //                                                    .filter(z => z._3 != 0)
-                    //                                        })
-                    //改用for循环实现
+                    //改用for循环实现,不用flatmap
                     var scoreArray = ArrayBuffer.empty[(Long, Long, Double)]
-
-                    val tmp = x.take(5).toArray
-                    for(i <-0 to tmp.size-1){
-                        for(ele<- tmp(i)._2._1){
-                            println(tmp(i)._1+"\t"+ele._1._1+"\t"+ele._1._2+"\t"+ele._2+"\t"+ele._3+"\t"+tmp(i)._2._2+"\t"+"   :zy")
-                        }
-                    }
+                    val tmp = x.toArray
+                    //                            .take(perLocUserCount)
                     val size = tmp.size
                     for (i <- 0 to size - 1) {
                         for (j <- i + 1 to size - 1) {
@@ -103,15 +88,10 @@ object TreeUserSimilar {
                             scoreArray.+=((y._1, z._1, score))
                         }
                     }
-                    for(i <-0 to tmp.size-1){
-                        for(ele<- tmp(i)._2._1){
-                            println(tmp(i)._1+"\t"+ele._1._1+"\t"+ele._1._2+"\t"+ele._2+"\t"+ele._3+"\t"+tmp(i)._2._2+"\t"+"   :zy")
-                        }
-                    }
                     scoreArray.filter(z => z._3 > 0)
                 })
-                .sortBy(x => (x._2._1, x._2._3), false, 50)
                 .persist(StorageLevel.DISK_ONLY)
+                .sortBy(x => (x._2._1, x._2._3), false, 50)
 
         userSimilarSocre.map {
             case ((jing, wei), (phoneA, phoneB, score)) => {
@@ -124,6 +104,20 @@ object TreeUserSimilar {
                 s"$jing\t$wei\t$phoneA\t$phoneB\t$score"
             }
         }.saveAsTextFile(scoreTopOutput)
+
+        userSimilarSocre.filter(x => x._2._3 > 0.7)
+                .flatMap(x => Array(x._2._1, x._2._2))
+                .distinct()
+                .map(x => (x, 1))
+                .join(trajectoryRdd)
+                .map(x => (x._1, x._2._2))
+                .sortBy(x => (x._1, x._2._2))
+                .map {
+                    case (phone, ((lac, ci), arrive_time, stay_time)) => {
+                        s"$phone\t$lac\t$ci\t$arrive_time\t$stay_time"
+                    }
+                }.saveAsTextFile(scoreTopOutput+"_data")
+
     }
 
 }

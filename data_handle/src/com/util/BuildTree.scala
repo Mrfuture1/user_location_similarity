@@ -50,6 +50,7 @@ class BuildTree[E](listLocA: List[((E, E), Long, Double)], listLocB: List[((E, E
                                 val timePercent = math.abs((arriveITimeA - leaveJTimeA) - (arriveITimeB - leaveJTimeB)) / math.max((arriveITimeA - leaveJTimeA), (arriveITimeB - leaveJTimeB))
                                 if (timePercent < timeP) {
                                     tp.addNode(commonLocationArray(i), leafNode)
+                                    comparedNodes.+=(nodeIndex)
                                     break()
                                 }
                             }
@@ -59,8 +60,9 @@ class BuildTree[E](listLocA: List[((E, E), Long, Double)], listLocB: List[((E, E
                             parentTmp = leafNode.parent
                         }
                         //如果比较到了根节点，则在根节点添加子节点
-                        if (parentTmp == -1) {
+                        if (parentTmp == -1 && !comparedNodes.contains(nodeIndex)) {
                             tp.addNode(commonLocationArray(i), leafNode)
+                            comparedNodes.+=(0)
                         }
                     }
                 }
