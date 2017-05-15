@@ -16,14 +16,14 @@ import scala.collection.mutable.ArrayBuffer
   * 2. 源数据的天数 date
   * 3. 相似轨迹的array长度topN的轨迹 topN
   */
-object TreeUserSimilar {
+object TreeUserSimilar_test_locaty {
     def main(args: Array[String]): Unit = {
-        val Array(trajectoryPath, homePath, date, topN, scoreOutput, scoreTopOutput) = args
+        val Array(trajectoryPath, homePath, date, topN, scoreOutput, scoreTopOutput,trouble) = args
         //        val date = 20160530
         //        val topN = 1
 
         val conf = new SparkConf().setAppName("TreeUserSimilar")
-        //                .setMaster("local")
+                        .setMaster("local")
         val sc = new SparkContext(conf)
 
         // 实际应用时,应该用家或者工作的位置做一些限定,以减少计算量
@@ -32,15 +32,12 @@ object TreeUserSimilar {
 
         // 轨迹数据
         val trajectoryRdd = sc.textFile(trajectoryPath).map(x => x.split("\t"))
-                .filter(x => x(5).toLong == date.toInt && x(4).toDouble > 100) //一天的轨迹进行比较
+//                .filter(x => x(5).toLong == date.toInt) //一天的轨迹进行比较
                 .map(x => (x(0).toLong, ((x(1).toDouble, x(2).toDouble), x(3).toLong, x(4).toDouble)))
 
         val trajectoryArrayData = trajectoryRdd.groupByKey()
                 .map(x => (x._1, x._2.toList.sortBy(x => x._2)))
-                .filter(x => x._2.size < 10 && x._2.size > 1) //仅比较位置数>1的用户
-        //取topN
-        //                .sortBy(x => x._2.size, false)
-        //                .take(100)
+                .filter(x => x._2.size > 1) //仅比较位置数>1的用户
 
         //每个位置重要度 log(n/N)
         val userTotalNum = trajectoryRdd.map(x => x._1).distinct().count() //总用户数
@@ -52,20 +49,22 @@ object TreeUserSimilar {
 
 
         //比较用户位置相似性
-        val tmpAllData = homeRdd.join(trajectoryArrayData)
-                .sortBy(x => x._2._2.size, false)
-                .take(1000)
-        val allData = sc.parallelize(tmpAllData)
-        //        val allData = tmpAllData
-        allData.repartition(1).map(x => ((x._2._1, x._1), x._2._2)).flatMapValues(x => x)
-                .map {
-                    case (((jing, wei), phone), ((lng, lat), arrive_time, stay_time)) => {
-                        s"$jing\t$wei\t$phone\t$lng\t$lat\t$arrive_time\t$stay_time"
-                    }
-                }.saveAsTextFile(scoreOutput + "_allData")
+//        val allData = homeRdd.join(trajectoryArrayData)
+//        allData.map(x => ((x._2._1, x._1), x._2._2)).flatMapValues(x => x)
+//                .map {
+//                    case (((jing, wei), phone), ((lng, lat), arrive_time, stay_time)) => {
+//                        s"$jing\t$wei\t$phone\t$lng\t$lat\t$arrive_time\t$stay_time"
+//                    }
+//                }.saveAsTextFile(scoreOutput + "_allData")
+        val allData=sc.textFile(trouble)
+                .map(x=>x.split("\t"))
+                .map(x=>(((x(0).toLong,x(1).toLong),x(2).toLong,x(7).toDouble),((x(3).toDouble,x(4).toDouble),x(5).toLong,x(6).toDouble)))
+                         .groupByKey()
+                .map(x=>(x._1._1,(x._1._2,(x._2.toList,x._1._3))))
         //按地区,考虑用户相似性
-        val userSimilarSocre = allData.map(x => ((x._2._1, (x._1, (x._2._2, x._2._2.map(y => locScore.value.get(y._1).get).sum)))))
-                .groupByKey(300)
+        val userSimilarSocre = allData
+//                .map(x => ((x._2._1, (x._1, (x._2._2, x._2._2.map(y => locScore.value.get(y._1).get).sum)))))
+                .groupByKey()
                 .flatMapValues(x => {
                     //                                        val i1 = x
                     //                                        val i2 = x.toArray
@@ -84,7 +83,7 @@ object TreeUserSimilar {
                     //改用for循环实现
                     var scoreArray = ArrayBuffer.empty[(Long, Long, Double)]
 
-                    val tmp = x.take(5).toArray
+                    val tmp = x.toArray
                     for(i <-0 to tmp.size-1){
                         for(ele<- tmp(i)._2._1){
                             println(tmp(i)._1+"\t"+ele._1._1+"\t"+ele._1._2+"\t"+ele._2+"\t"+ele._3+"\t"+tmp(i)._2._2+"\t"+"   :zy")
@@ -101,11 +100,6 @@ object TreeUserSimilar {
                             val allBranchNodeIndex = tree.getAllBranchNodeIndex()
                             val score = buildTree.similarScore(topN.toInt, allBranchNodeIndex, tree, locScore.value, y._2._2, z._2._2)
                             scoreArray.+=((y._1, z._1, score))
-                        }
-                    }
-                    for(i <-0 to tmp.size-1){
-                        for(ele<- tmp(i)._2._1){
-                            println(tmp(i)._1+"\t"+ele._1._1+"\t"+ele._1._2+"\t"+ele._2+"\t"+ele._3+"\t"+tmp(i)._2._2+"\t"+"   :zy")
                         }
                     }
                     scoreArray.filter(z => z._3 > 0)
